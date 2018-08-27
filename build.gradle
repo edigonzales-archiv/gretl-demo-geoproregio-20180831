@@ -9,31 +9,178 @@ buildscript {
         }
         mavenCentral()
         jcenter()
+        fileTree(dir: 'libs', include: '*.jar')
+        flatDir(dirs: './libs')
+    }
+    dependencies {
+        classpath 'com.oracle:ojdbc8:12.1.0.2'
     }
 }
 
 plugins {
-  id "ch.so.agi.gretl" version "1.0.5-SNAPSHOT" // snapshot support needs gradle >= v4.10
+    id "com.bmuschko.docker-remote-api" version "3.6.1"
+    id "ch.so.agi.gretl" version "1.0.5-SNAPSHOT" // snapshot support needs gradle >= v4.10
 }
 
 import ch.so.agi.gretl.tasks.*
 import ch.so.agi.gretl.api.TransferSet
+import com.bmuschko.gradle.docker.tasks.image.DockerBuildImage
+import com.bmuschko.gradle.docker.tasks.image.DockerPullImage
+import com.bmuschko.gradle.docker.tasks.container.DockerRemoveContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerCreateContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerStartContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerStopContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerCreateContainer.ExposedPort
+import com.bmuschko.gradle.docker.tasks.container.extras.DockerWaitHealthyContainer
 
 ext {
-    dbUriSogis = "jdbc:postgresql://geodb.verw.rootso.org:5432/sogis"
-    dbUserSogis = "mspublic"
-    dbPwdSogis = "mspublic"
-    dbUriVagrant = "jdbc:postgresql://192.168.50.8/sogis"
-    dbUserVagrant = "ddluser"
-    dbPwdVagrant = "ddluser"
+    dbUriSource = "jdbc:postgresql://localhost:5432/sogis"
+    dbUserSource = "ddluser"
+    dbPwdSource = "ddluser"
+    dbUriTarget = "jdbc:oracle:thin:@localhost:1521:xe"
+    dbUserTarget = "system"
+    dbPwdTarget = "oracle"
 }
+
+def DOCKER_GROUP = "Docker"
+
+def tagNamePostgres = "source-db"
+def nameOfContainerPostgres = "source-db"
+def tagNameOracle = "target-db"
+def nameOfContainerOracle = "target-db"
+
+/**
+ * Start PostgreSQL database.
+ */
+
+task buildPostgresDockerImage(type: DockerBuildImage) {
+    group = DOCKER_GROUP
+    description = "Erstellt ein PostGIS Docker Image."
+    inputDir = file("docker")
+    tag = tagNamePostgres
+}
+
+task removePostgresDockerContainer(type: DockerRemoveContainer) {
+    description = "Entfernt (falls vorhanden) einen PostGIS Docker Container."
+    group = DOCKER_GROUP
+    
+    targetContainerId { nameOfContainerPostgres }
+    force = true
+
+    onError { exception ->
+        if (!exception.message.contains('No such container')) // ignore exception if container does not exist otherwise throw it
+            throw exception
+    }
+}
+
+task createPostgresDockerContainer(type: DockerCreateContainer) {
+    dependsOn 'buildPostgresDockerImage'
+    dependsOn 'removePostgresDockerContainer'
+
+    description = "Erstellt einen PostGIS Docker Container."
+    group = DOCKER_GROUP
+
+    targetImageId { buildPostgresDockerImage.getImageId() }
+    containerName = nameOfContainerPostgres
+    portBindings = ['5432:5432']
+    exposedPorts = [new ExposedPort("tcp", [5432])]
+}
+
+task startPostgresDockerContainer(type: DockerStartContainer) {
+    dependsOn 'createPostgresDockerContainer'
+
+    description = "Started den PostGIS Docker Container."
+    group = DOCKER_GROUP
+
+    targetContainerId { createPostgresDockerContainer.getContainerId() }
+}
+
+task startAndWaitOnHealthyPostgresContainer(type: DockerWaitHealthyContainer) {
+    dependsOn 'startPostgresDockerContainer'
+
+    description = "Wartet bis die Datenbank im PostGIS Docker Container verfügbar ist."
+    group = DOCKER_GROUP
+
+    timeout = 60
+    targetContainerId { createPostgresDockerContainer.getContainerId() }
+}
+
+task stopPostgresDockerContainer(type: DockerStopContainer) {
+    description = "Stoppt den Docker Container."
+    group = DOCKER_GROUP
+
+    targetContainerId { createPostgresDockerContainer.getContainerId() }
+}
+
+/**
+ * Start Oracle Database.
+ * hostname: localhost
+ * port: 1521
+ * sid: xe
+ * username: system
+ * password: oracle
+ * jdbc-url: jdbc:oracle:thin:@localhost:1521:xe
+ */
+
+task removeOracleDockerContainer(type: DockerRemoveContainer) {
+    description = "Entfernt (falls vorhanden) einen Oracle Docker Container."
+    group = DOCKER_GROUP
+    
+    targetContainerId { nameOfContainerOracle }
+    force = true
+
+    onError { exception ->
+        if (!exception.message.contains('No such container')) // ignore exception if container does not exist otherwise throw it
+            throw exception
+    }
+}
+
+task pullOracleDockerImage(type: DockerPullImage) {
+
+    description = "Lädt ein Oracle Docker Image herunter (lässige 2.8 GB)"
+    group = DOCKER_GROUP
+
+    repository = "pengbai/docker-oracle-12c-r1"
+    tag = "latest"
+
+}
+
+task createOracleDockerContainer(type: DockerCreateContainer) {
+    dependsOn 'pullOracleDockerImage'
+    dependsOn 'removeOracleDockerContainer'
+
+    description = "Erstellt einen Oracle Docker Container."
+    group = DOCKER_GROUP
+
+    targetImageId { "pengbai/docker-oracle-12c-r1" }
+    containerName = nameOfContainerOracle
+    portBindings = ['1521:1521']
+    exposedPorts = [new ExposedPort("tcp", [1521])]
+}
+
+// Start dauert lange (im Gegensatz zu Postgres).
+// doLast{} oder auch hier 'DockerWaitHealthyContainer'.
+// Dazu müsste man aber Oracle verstehen.
+task startOracleDockerContainer(type: DockerStartContainer) {
+    dependsOn 'createOracleDockerContainer'
+
+    description = "Started den Oracle Docker Container."
+    group = DOCKER_GROUP
+
+    targetContainerId { createOracleDockerContainer.getContainerId() }
+}
+
+/**
+ * Und jetzt zur eigentlichen Aufgabe.
+ */
 
 task importSchema(type: Ili2pgImportSchema) {
     description = "Erstellt das Datenbankschema mit den leeren Tabellen anhand eines INTERLIS-Modelles."
-    database = [dbUriVagrant, dbUserVagrant, dbPwdVagrant]
-    models = "SO_AGEM_Fila_20180820"
-    modeldir = "http://models.geo.admin.ch;../" 
-    dbschema = "agem_fila"
+    
+    database = [dbUriSource, dbUserSource, dbPwdSource]
+    models = "DM01AVCH24LV95D"
+    //modeldir = "http://models.geo.admin.ch;../" 
+    dbschema = "ch_2549"
     nameByTopic = true
     createFk = true
     createFkIdx = true
@@ -41,25 +188,44 @@ task importSchema(type: Ili2pgImportSchema) {
     createNumChecks = true
     createEnumTabs = true
     strokeArcs = true
+    disableValidation = true
     logFile = "ili2pg_import_schema.log"
 }
 
-task transferTLMStrassen(type: Db2Db) {
-    description = "Kopiert die Daten aus dem Original-TLM-Datensatz in das eigene Modell."
-    sourceDb = [dbUriSogis, dbUserSogis, dbPwdSogis]
-    targetDb = [dbUriVagrant, dbUserVagrant, dbPwdVagrant]
+task importData(type: Ili2pgImport) {
+    description = "Import INTERLIS-Daten."
+
+    database = [dbUriSource, dbUserSource, dbPwdSource]    
+    dbschema = "ch_2549"
+    dataFile = "ch_254900.itf"
+    disableValidation = true
+    logFile = "ili2pg_import.log"
+}
+
+task exportBodenbedeckung(type: ShpExport) {
+    description = "Export der Bodenbedeckung in ein Shapefile."
+
+    database = [dbUriSource, dbUserSource, dbPwdSource]
+    schemaName = "ch_2549"
+    tableName = "bodenbedeckung_boflaeche"
+    dataFile = "bodenbedeckung_boflaeche.shp"
+
+}
+
+task dummyOracleQuery(type: SqlExecutor) {
+    description = "Dumme SQL-Query zum Testen der Oracle-DB."
+    
+    database = [dbUriTarget, dbUserTarget, dbPwdTarget]
+    sqlFiles = ["sql/oracle-dummy.sql"]
+}
+
+/*
+task transferPostgresToOracle(type: Db2Db) {
+    description = "PostgreSQL -> Oracle."
+    sourceDb = [dbUriSource, dbUserSource, dbPwdSource]
+    targetDb = [dbUriTarget, dbUserTarget, dbPwdTarget]
     transferSets = [
-            new TransferSet('agem_fila_tlm_strassenachse.sql', 'agem_fila.tlm_strassenachse', true)
+            new TransferSet('postgres2oracle.sql', 'XXXX.YYYY', false)
     ];
 }
-
-
-task exportTLMStrassen(type: Ili2pgExport) {
-    description = "Export die Daten in eine INTERLIS-Transferdatei."
-    database = [dbUriVagrant, dbUserVagrant, dbPwdVagrant]
-    dbschema = "agem_fila"
-    models = "SO_AGEM_Fila_20180820"
-    modeldir = "http://models.geo.admin.ch;../" 
-    dataFile = "tlm_strassen.xtf"
-    logFile = "ili2pg_export.log"
-}
+*/

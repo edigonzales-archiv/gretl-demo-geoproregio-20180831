@@ -1,5 +1,7 @@
 # Add any directories, files, or patterns you don't want to be tracked by version control
 
+!/libs/
+
 # Do not add .idea directory.
 .idea
 
@@ -123,9 +125,10 @@ modules.xml
 .mtj.tmp/
 
 # Package Files #
-*.jar
+!*.jar
 !/gretl/lib/*.jar
 !/lib/**.jar
+!/libs/**.jar
 *.war
 *.ear
 *.zip
