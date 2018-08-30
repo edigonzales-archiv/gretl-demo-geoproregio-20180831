@@ -44,10 +44,10 @@ ext {
 
 def DOCKER_GROUP = "Docker"
 
-def tagNamePostgres = "source-db"
-def nameOfContainerPostgres = "source-db"
-def tagNameOracle = "target-db"
-def nameOfContainerOracle = "target-db"
+def tagNamePostgres = "postgres-db"
+def nameOfContainerPostgres = "postgres-db"
+def tagNameOracle = "oracle-db"
+def nameOfContainerOracle = "oracle-db"
 
 /**
  * Start PostgreSQL database.
@@ -171,7 +171,7 @@ task startOracleDockerContainer(type: DockerStartContainer) {
 }
 
 /**
- * Und jetzt zur eigentlichen Aufgabe.
+ * Und jetzt noch zur eigentlichen Aufgabe.
  */
 
 task importSchema(type: Ili2pgImportSchema) {
